@@ -8,6 +8,7 @@
 // 15 December 2015     Khushal Dave         T-457534 added mapping for Uplift percentage from CLI to BLI
 // 14 April 2016        Khushal Dave         T-492617 Updated SOQL query to only retrieve the Active CLI's
 // 22 April 2016        Khushal Dave         T-497185 Updated the SOQL query and search field plus Vf has been modified.
+//added by sapan
 
 public with sharing class ProductSelectorController
 {
