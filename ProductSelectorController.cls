@@ -1,441 +1,417 @@
-// 
-// (c) 2015 Appirio, Inc.
-//
-// Controller for page allowing user to create booking line items for a booking, based upon available contract line items
-//
-// 19 November 2015     Shane Khublall       Original.
-// 02 December 2015     Shane Khublall       Updates including replacing text with custom labels
-// 15 December 2015     Khushal Dave         T-457534 added mapping for Uplift percentage from CLI to BLI
-// 14 April 2016        Khushal Dave         T-492617 Updated SOQL query to only retrieve the Active CLI's
-// 22 April 2016        Khushal Dave         T-497185 Updated the SOQL query and search field plus Vf has been modified.
-//added by sapan
+<!-- SKhublall 19/11/15 -->
+<apex:page showHeader="true" sidebar="true" tabStyle="Product2" id="prodSel" controller="ProductSelectorController" action="{!performSearch}" title="Product Selector">
+<!-- <apex:pageMessages id="pageMessages2"/> -->
+    <apex:outputLink value="/{!parentRecordId}" id="returnLink" style="float:left">{!$Label.Back_To_Booking}</apex:outputLink>
+    <br/>
+    <apex:sectionHeader title="{!$Label.Booking}" subtitle="{!$Label.Product_Selector}"/>
+    <style type="text/css">
+        .data_field{
+            padding-right:20px; 
+        }
+        span#icon_clear{   
+            font-family:verdana;
+            cursor:pointer;
+            color:#38468F;
+            font-weight:bold;
+            position:relative;
+            height:20px;
+            left:-18px;
+                
+        }
+        span#icon_clear:hover{
+                color:#ccc;
+        }
+        ::-ms-clear {
+          display: none;
+        }
 
-public with sharing class ProductSelectorController
-{
-    //Search criteria fields
-    //public String productNameToSearch {set;get;}
-    public String customerproductNameToSearch {set;get;}
-    public String resetTextBoxName {set; get;}
-    
-    public Id parentRecordId {get;set;} // Parent record will be a case
-    private String bookingRecordTypeName;
-    private RecordType bookingLineItemRecordType;
-    private Case parentCase;
-    public List<ContractLineItemWrapper> allCLIRecordsWrapped {set;get;} // used on page to hold record info + a checkbox for user interaction
-    public Set <Id> allCLIRecordsPersistPageChange {set;get;} // store the ID of each record that is checked on the page by the user, to persist through page change
+        /* Used for the results list START */
+        .clickableHeader {
+            cursor: pointer;
+            width: 100%;
+        }
+        .paginatorWrap {
+            background: url("/img/alohaSkin/listFooter.png") repeat-x scroll 0 0 #F2F2F2;
+            border: 1px solid #EAEAEA;
+            background-color: #F3F3F3;
+            border-top: 1px solid #FFFFFF;
+            padding: 5px;
+        }
+        
+        .noRecordsFound {
+            border: 1px solid #D4DADC;
+            padding: 4px;
+        }
+        
+        .imageAsc {
+            background: url("/img/alohaSkin/sortArrows.png") no-repeat scroll left top transparent;
+            height: 8px;
+            margin: 0 5px;
+            vertical-align: -1px;
+            width: 7px;
+        }
+        
+        .imageDesc {
+            background: url("/img/alohaSkin/sortArrows.png") no-repeat scroll 0px -12px transparent;
+            background-repeat: no-repeat;
+            height: 8px;
+            margin: 0 5px;
+            vertical-align: -1px;
+            width: 7px;
+        }
+        
+        .noRowsHeader {
+            border: 1px solid rgb(221, 213, 213);
+            background-color: #f8f8f8;
+            background-image: none;
+            font-size: 0.9em;
+            font-weight: normal;
+            padding: 5px; 
+        }
+        /* Used for the results list END */
 
-    private Map<String,Set<String>> recordTypeToProductFamilyMap = new Map<String,Set<String>>(); // to select products with the correct product families
+    </style> 
+    <apex:form id="frm">
+        <script>
+          // Character limits of search contact for all fields
+          var searchCharacterLimit = 3; 
+          //this variable would be used to show total prices of all records
+          var totalPrice=0;
+        </script>
 
-    public ApexPages.StandardSetController ssc {get; set;} // For pagination
-    public Integer pageSize = 10;// default page size of results returned
+        <table class="list" width="100%">
+            <tr class="dataRow" onmouseout="javascript:hiOff(this)" onmouseover="javascript:hiOn(this)">
+                <td class="labelCol" colspan="1" style="width:200px;" ><h2 class="pageDescription">{!$Label.Product_Search}</h2></td>
+                <td class="dataCell" colspan="4"><a href="javascript:void(0);" onclick="resetSearchStatus();"> {!$Label.Reset_Search}</a> 
+                </td>
+            </tr>
+            <tr class="dataRow" onmouseout="javascript:hiOff(this)" onmouseover="javascript:hiOn(this)">
+                <td class="labelCol" style="width:200px;" > {!$Label.Search_By} </td>
+                <td class="dataCell" >{!$ObjectType.Contract_Line_Item__c.Fields.Customer_Product_Invoice_Name__c.Label}</td>
+               
+            </tr>
+            <tr class="dataRow" onmouseout="javascript:hiOff(this)" onmouseover="javascript:hiOn(this)">
+                <td class="labelCol" style="width:200px;" > {!$Label.Search_Criteria}: </td>
+                <td class="dataCell" >  
+                     <apex:outputPanel id="op1">                        
+                        <apex:inputText styleClass="data_field" title="Minimum two characters are required" value="{!customerproductNameToSearch}" onkeypress="doSearch(this.id,event);" id="txtPName" style="width:100px;" />
+                        <span class="cross_icon" id="icon_clear">x</span>
+                    </apex:outputPanel> 
+                </td>
+                <td class="dataCell">  <apex:inputField value="{!parentCase.Site__c}" onchange="init();"  /></td>
+            </tr>
+        </table> 
 
-    // Constructor, calls init method to initialise required variables
-    public ProductSelectorController()
-    {
-        init();
-    }
-    
-    // Used in constructor, initialise all requried variables, including retrieval of custom setting records and retrieval of related Booking information
-    // @param : no parameters
-    // @return : does not return anything
-    private void init()
-    {
-        allCLIRecordsPersistPageChange = new Set<Id>();
-        try
-        {
-            for(Booking_Record_Type_to_Product_Families__c singlerecTypeToProdFam : Booking_Record_Type_to_Product_Families__c.getAll().values())
-            {
-                List<String> prodFams = singlerecTypeToProdFam.Product_Families__c.split(',');
-                Set<String> productFamilies = new Set<String>();
-                productFamilies.addAll(prodFams);
-                recordTypeToProductFamilyMap.put(singlerecTypeToProdFam.Name,productFamilies);
+        <input type="hidden" id="oldPName" value="" />
+
+        
+
+
+        <apex:actionFunction action="{!performSearch}" name="search" reRender="resultBlock,pnlDisplayMsg" status="myStatus" >
+            <apex:param name="d1" value="" assignTo="{!customerproductNameToSearch}" />
+      </apex:actionFunction>
+
+        <apex:actionFunction name="resetSearchStatus" action="{!resetSearchStatus}" reRender="frm" status="myStatus" >
+            <apex:param name="txtobj" value="" assignTo="{!resetTextBoxName}" />
+        </apex:actionFunction>
+
+        <!-- Page Messages will be displayed here -->
+        <apex:outputPanel id="pnlDisplayMsg">
+            <!-- <apex:pageMessages /> -->
+        </apex:outputPanel>
+
+        <!-- This is where the results will be displayed -->
+        <apex:outputPanel id="resultBlock" >
+        <apex:pageMessages id="pageMessages"/>
+            <apex:pageBlock id="pageBlock" title="{!$Label.Products}">
+            <script type='text/javascript' src='https://ajax.googleapis.com/ajax/libs/jquery/1.7.2/jquery.min.js' ></script>
+                <script type="text/javascript"> // jQuery is used for correct checkbox rendering
+                //intializing totalPrice to 0 once search button is clicked
+                    totalPrice=0;
+                    $j=jQuery.noConflict();
+                    $j(document).ready(function(){
+                      $j('.headerCheckbox').click(function(){
+                          totalPrice=0;
+                      var selAll = this.checked;
+                      $j('.checkbox').each(function(){
+                      this.checked = selAll;
+                       var totalPriceForSingleRecord=Number(document.getElementById('hi-'+this.id).value);
+                       if(this.checked)
+                       {
+                          totalPrice+=totalPriceForSingleRecord;
+                              
+                       }
+                       else
+                       {
+                            totalPrice=0;
+                            
+                       }
+                       document.getElementById('totalPrice').innerHTML='<B>{!$Label.TotalPrice}</B> '+totalPrice;
+                      });
+                      if(!this.checked)
+                       document.getElementById('totalPrice').innerHTML='';
+                       //else
+                       
+                          
+                      });
+
+                      $j('.checkbox').click(function(){
+                          //this hidden value store total price for each row
+                       var totalPriceForSingleRecord=Number(document.getElementById('hi-'+this.id).value);
+                           if(this.checked)
+                          { 
+                          totalPrice+=totalPriceForSingleRecord;
+                          }else
+                          {
+                           totalPrice-=totalPriceForSingleRecord;                          
+                          }
+                        if($j('.checkbox:checked').length == $j('.checkbox').length){
+                           
+                            
+                            $j('.headerCheckbox').prop('checked',true);
+                        }else{
+                            $j('.headerCheckbox').prop('checked',false);
+                       
+                            
+                            
+                        }
+                    
+                      document.getElementById('totalPrice').innerHTML='<B>{!$Label.TotalPrice}</B> '+totalPrice;
+                      });
+                    });
+
+                    $j('.headerCheckbox').each(function ()// go through the header checkbox.
+                    {
+                        var allSel = true; //true, unless 1 or more checkboxes are false
+                        $j('.checkbox').each(function()
+                        {
+                            if(!this.checked)
+                            {
+                                allSel=false;
+                            }
+                        });
+                        if(!allSel)
+                        {
+                          document.getElementById('totalPrice').innerHTML='';
+                         
+                        }
+                        this.checked=allSel;
+                    
+                        
+                    });
+                </script>
+                <apex:pageBlockButtons location="top" >
+
+                   <apex:actionStatus style="float:left;" stopText="" id="myStatus">
+                    <apex:facet name="start">
+                        <img src="/img/loading.gif" />
+                    </apex:facet>
+                 </apex:actionStatus>      
+              
+                </apex:pageBlockButtons>
+
+                <!-- This is our results pageBlock no records returned START -->
+                <apex:outputPanel rendered="{!OR(ISNULL(allCLIRecordsWrapped),allCLIRecordsWrapped.size == 0)}" >
+                    <div class="noRowsHeader">{!$Label.No_records_to_display}</div>
+                </apex:outputPanel>
+                <!-- This is our results pageBlock no records returned END -->
+
+                <!-- This is our results pageBlock START -->
+                <apex:pageBlockTable value="{!allCLIRecordsWrapped}" var="r" rendered="{!AND(NOT(ISNULL(allCLIRecordsWrapped)),allCLIRecordsWrapped.size > 0)}">
+                    <apex:column >
+                        <apex:facet name="header">
+                            <apex:inputCheckbox id="select_all" styleClass="headerCheckbox"/>
+                        </apex:facet>
+                        <input type="Checkbox" value="{!r.selected}"  id="{!r.childLI.id}" class="checkbox"/>
+                        <input type="Hidden" id="hi-{!r.childLI.id}" value="{!r.childLI.Line_Item_Price__c*r.childLI.Quantity_contracted__c}"/>
+                    </apex:column>
+<!--                <apex:column headerValue="{!$Label.Product}" value="{!r.childLI.Product__c}"/> -->
+                   <apex:column headerValue="{!$ObjectType.Contract_Line_Item__c.Fields.Customer_Product_Invoice_Name__c.Label}" value="{!r.childLI.Customer_Product_Invoice_Name__c}"/>
+                    <apex:column headerValue="{!$Label.CLI_Name}" value="{!r.childLI.Name}"/>
+                    <apex:column headerValue="{!$Label.Quantity}" value="{!r.childLI.Quantity_contracted__c}"/>
+                    <apex:column headerValue="{!$Label.Product_Family}" value="{!r.childLI.Product_Family__c}"/>
+                    <apex:column headerValue="{!$Label.Line_Item_Price}" value="{!r.childLI.Line_Item_Price__c}"/>
+                    <apex:column headerValue="{!$Label.Clinical_Indicator}" value="{!r.childLI.Clinical_Indicator__c}"/>
+                    <apex:column headerValue="{!$Label.Clinical_Indicator_Description}" value="{!r.childLI.Clinical_Indicator_Description__c}"/>
+                    
+                </apex:pageBlockTable>
+                <apex:outputPanel layout="block" styleClass="paginatorWrap" rendered="{!AND(allCLIRecordsWrapped.size > 0, NOT(ISNULL(ssc.pageSize)))}">
+                    <div class="paginator">
+                        <span class="left" id="totalPrice">
+                            
+                      </span>                        
+                        <span class="prevNextLinks">
+                      
+                            <span class="prevNext">
+                                <!-- Show first button if page set has previous page-->
+                                <apex:commandLink value="" action="{!first}" rendered="{!ssc.pageNumber != 1}" rerender="pageBlock" title="First" status="myStatus">
+                                    <img class="first" src="/s.gif" alt="" />
+                                </apex:commandLink>
+                                
+                                <apex:outputPanel rendered="{!NOT(ssc.hasPrevious)}">
+                                    <img class="firstoff" src="/s.gif" alt="" />
+                                </apex:outputPanel>
+                            </span>
+                            
+                            <!-- Previous Button -->
+                            <span class="prevNext">
+                               
+                                <apex:commandLink value="" action="{!previous}" rendered="{!ssc.hasPrevious}" rerender="pageBlock" status="myStatus">
+                                    <img class="prev" src="/s.gif" alt="" />{!$Label.Previous}
+                                </apex:commandLink>
+                                
+                               
+                                <apex:outputPanel rendered="{!NOT(ssc.hasPrevious)}">
+                                    <img class="prevoff" src="/s.gif" alt="" />{!$Label.Previous}
+                                </apex:outputPanel>
+                            </span>
+                            
+                          
+                            <span class="prevNext">
+                                <!-- Show next button if page set has next -->
+                                <apex:commandLink value="" action="{!next}" rendered="{!ssc.hasNext}" rerender="pageBlock" status="myStatus">
+                                    {!$Label.Next}<img class="next" alt="Next" title="Next" src="/s.gif" />
+                                </apex:commandLink>
+                               
+                                <apex:outputPanel rendered="{!NOT(ssc.hasNext)}">
+                                    {!$Label.Next}<img class="nextOff" alt="Next" title="Next" src="/s.gif" />
+                                </apex:outputPanel>
+                            </span>
+                            
+                            <!-- Last Button -->
+                            <span class="prevNext"> 
+                                <!-- Show last button if page set has next -->
+                                <apex:commandLink value="" action="{!last}" rendered="{!ssc.hasNext}" title="Last" rerender="pageBlock" status="myStatus">
+                                    <img class="last" src="/s.gif" alt="" />
+                                </apex:commandLink>
+                                
+                                <!-- Show disabled last button if page set has no next -->
+                                <apex:outputPanel rendered="{!NOT(ssc.hasNext)}">
+                                    <img class="lastoff" src="/s.gif" alt="" />
+                                </apex:outputPanel>
+                            </span>
+                            
+                        </span>
+
+                        <span class="right">
+                            {!$Label.Page}&nbsp;
+                            
+                            <apex:inputText value="{!ssc.pageNumber}" styleClass="pageInput"  onkeypress="return isNumber(event,this)">
+                                <apex:actionSupport event="onchange" rerender="pageBlock" status="myStatus" action="{!jumpToPage}"/>
+                            </apex:inputText>
+                            
+                             {!$Label.Of} {!CEILING(ssc.ResultSize / ssc.pageSize)} 
+               
+                        </span>
+
+                    </div>
+                </apex:outputPanel>
+                <apex:pageBlockButtons rendered="{!AND(NOT(ISNULL(allCLIRecordsWrapped)),allCLIRecordsWrapped.size > 0)}" location="bottom">
+                    <apex:commandButton action="{!insertAndSearchAgain}" value="{!$Label.Save_More}" id="createBookingLIs" reRender="pageBlock, pageMessages" status="myStatus"/>
+                    <apex:commandButton action="{!insertAndReturn}" value="{!$Label.Save_Go_Back_to_Booking}" id="createAndReturn"/>
+                </apex:pageBlockButtons>
+
+                <!-- This is our results pageBlock END -->
+
+            </apex:pageBlock>
+
+        </apex:outputPanel>
+    </apex:form>
+
+    <script>
+        $j=jQuery.noConflict();
+        $j('.data_field').each(function() {
+            if ($j(this).val().length <= 0) {
+                $j(this).next().fadeOut(300);
             }
-            System.debug('recordTypeToProductFamilyMap is: ' + recordTypeToProductFamilyMap);
-        }
-        catch(Exception e) 
+            else {
+                $j('.cross_icon').fadeIn(300);
+            }
+        });
+        
+        $j('.data_field').on('keyup', function() {
+            if ($j(this).val().length > 0) {
+                $j(this).next().fadeIn(300);
+            }
+            else{
+                $j(this).next().fadeOut(300);
+            }
+        });
+
+        $j('.cross_icon').on('click',function()
         {
-            ApexPages.Message noBookingSelected = new ApexPages.Message(ApexPages.Severity.Error,System.Label.custom_settings_not_defined + ': ' + e.getMessage());
-            ApexPages.addMessage(noBookingSelected);
-            return;
+               if(this.parentElement.id == 'prodSel:frm:op1'){               
+                  resetSearchStatus('1');
+              }
+        }); 
+
+        function validateForSearch(ctrl)
+        {   
+           setTimeout("validateForSearch2()",1000);
         }
 
-        try
+        function doSearch(ctrl,e)
         {
-            parentRecordId = System.currentPageReference().getParameters().get('bookingId');// need the booking Id
-            for(Case singleCase: [SELECT Id, AccountId, RecordTypeId, Contract__c FROM Case WHERE Id =:parentRecordId])
-            {
-                parentCase = singleCase;
-            }
-            if(parentCase == null)
-            {
-                ApexPages.Message noBookingReturned = new ApexPages.Message(ApexPages.Severity.Error,System.Label.Booking_Not_Found);
-                ApexPages.addMessage(noBookingReturned);
-                return;
-            }
-            else
-            {
-                Schema.DescribeSObjectResult caseDescribe = Schema.SObjectType.Case; 
-                Map<Id,Schema.RecordTypeInfo> caseRtIdToRT = caseDescribe.getRecordTypeInfosById();
-                Schema.RecordTypeInfo rtById =  caseRtIdToRT.get(parentCase.RecordTypeId);                
-                bookingRecordTypeName = rtById.getName();
-                System.debug('bookingRecordTypeName is: ' + bookingRecordTypeName);
-            }
-        }
-        catch(Exception e)
-        {
-            ApexPages.Message noBookingSelected = new ApexPages.Message(ApexPages.Severity.Error,System.Label.no_booking_selected + ': ' + e.getMessage());
-            ApexPages.addMessage(noBookingSelected);
-            return;
-        }
-    }
+            var keycode = (e.keyCode ? e.keyCode : e.which); 
+                if(keycode == '13'){   
+                    e.preventDefault ? e.preventDefault() : e.returnValue = false;
 
-    //set to default status of page
-    // @param : no parameters
-    // @return : does not return anything
-    public void resetSearchStatus()
-    {        
-        //Reset Contact fields
-        if(resetTextBoxName != '')
-        {
-            if(resetTextBoxName=='1')
-            {
-                // productNameToSearch = '';
-                 customerproductNameToSearch='';
-            }
-        }
-        else
-        {  
-            //productNameToSearch = ''; 
-            customerproductNameToSearch=  '';
-        }
-        performSearch();
-    }
+                    if(document.getElementById(ctrl).value==''){
+                        return false;
+                    }      
+                    validateForSearch2();
+                    return false;
+                }
+        }  
 
-    // searches for Contract Line Items to display on Visualforce page. Excludes CLIs where a BLI has already been created for it.
-    // @param : no parameters
-    // @return : does not return anything
-    public void performSearch()
-    {
-        if(parentCase!=null)
+        //Function to trim string
+        function fncTrim(value)
+        {
+            return value.replace(/^\s*/, "").replace(/\s*$/, "");
+        }
+
+        function validateForSearch2()
         {
             try{
-                Set<Id> contractIds = new Set<Id>();
-                for(Contract__c singleContract : [SELECT Id, Customer_Name__c FROM Contract__c
-                WHERE Id=:parentCase.Contract__c AND(Status__c='Live' OR(Status__c='Lapsed' AND Continue_after_expiry_date__c=TRUE))])
-                {
-                    contractIds.add(singleContract.Id);
-                }
+              //  var txtProdName = document.getElementById("prodSel:frm:txtPName").value;
+                var txtProdName=$j( "input[id$='txtPName']").val();
+
+                if(fncTrim(txtProdName ) != '')
+                {   
+                    var oldProdName = document.getElementById('oldPName').value;
+                    
+                    document.getElementById('oldPName').value = oldProdName;
+                     
+                    var isChange = 'No';
+                           
+                    if(fncTrim(txtProdName).length >= searchCharacterLimit && txtProdName != oldProdName){
+                       isChange = 'Yes';
+                    }
+
+                    if(isChange == 'Yes' ){                     
+                        search(txtProdName); 
+                    }    
+                }          
+            }
+            catch(e){         
+                alert(e);
+            }     
+        }
+
+        // This function is used for the paginator with the results
+        function isNumber(evt,obj)
+        {
+            evt = (evt) ? evt : window.event;
+            var charCode = (evt.which) ? evt.which : evt.keyCode;
+            if(charCode == 13){
                 
-                System.debug('contractIds are: ' + contractIds); 
-    
-                Set<String> productFamilySearchString = new Set<String>();
-                if(recordTypeToProductFamilyMap.containsKey(bookingRecordTypeName))
-                {
-                    productFamilySearchString = recordTypeToProductFamilyMap.get(bookingRecordTypeName);
-                }
-                System.debug('productFamilySearchString is:' + productFamilySearchString);
-                
-                // Do not display any contract line items where a booking line item exists on the booking, and the booking line item has a parent contract line item that is returned from related contracts.
-                List <Booking_Line_Item__c> allRelatedBookingLineItems = new List<Booking_Line_Item__c>([SELECT Id, Contract_line_item__c FROM Booking_Line_Item__c WHERE Case__c =:parentRecordId]);
-                Set<Id> recordsToExclude = new Set<Id>();
-                
-                for(Booking_Line_Item__c singleBookingLineItem : allRelatedBookingLineItems)
-                {
-                   recordsToExclude.add(singleBookingLineItem.Contract_line_item__c);
-                }
-                System.debug('allRelatedBookingLineItems is: ' + allRelatedBookingLineItems);
-                // Now get the child contract Line item records.
-    
-               // String productNameToSearchUpdated = '%' + (productNameToSearch==null?'%':productNameToSearch) + '%'; // The search term
-                String customerproductNameToSearchUpdated = '%' + (customerproductNameToSearch==null?'%':customerproductNameToSearch) + '%';// The search term
-                system.debug('select q:SELECT Id, Name, Contract__c, Quantity_contracted__c,Product_Family__c, Line_Item_Price__c, Clinical_Indicator__c, Customer_Product_Invoice_Name__c,Clinical_Indicator_Description__c, Chargeable_Overtime__c  FROM Contract_line_item__c WHERE Contract__c IN: '+contractIds+' AND Product_Family__c IN:'+ productFamilySearchString +'AND Id NOT IN: '+recordsToExclude+' AND Status__c!=\'Inactive\' AND Customer_Product_Invoice_Name__c LIKE:'+ customerproductNameToSearchUpdated+'');
-                
-                List<Contract_line_item__c> allChildContractLineItems = [SELECT Id, Name, Contract__c, Quantity_contracted__c, 
-                                                                        Product_Family__c, Line_Item_Price__c, Clinical_Indicator__c, Customer_Product_Invoice_Name__c,  
-                                                                        Clinical_Indicator_Description__c, Chargeable_Overtime__c  
-                                                                        FROM Contract_line_item__c 
-                                                                        WHERE Contract__c IN: contractIds AND Product_Family__c IN: productFamilySearchString 
-                                                                        AND Id NOT IN: recordsToExclude AND Status__c!='Inactive' AND 
-                                                                        Customer_Product_Invoice_Name__c LIKE: customerproductNameToSearchUpdated];
-                
-                ssc = new ApexPages.StandardSetController(allChildContractLineItems);
-                ssc.setPageSize(pageSize);
-                ssc.setpageNumber(1);
-                System.debug('pageSize just after contract line item retrieval is : ' + ssc.getPageSize());
-                System.debug('allChildContractLineItems is: ' + allChildContractLineItems);
-                // This needs to be refined to show contract line items where their prodFamily matches the case's record type. This will need to wait until record types are defined on the Case object.
-    
-                System.debug('allCLIRecordsWrapped is: ' + allCLIRecordsWrapped);
-                updatePageView();
+                obj.onchange();
+                return false;
             }
-            catch(Exception e)
-            {
-                ApexPages.Message searchError = new ApexPages.Message(ApexPages.Severity.Error,System.label.Search_Error + ': ' + e.getMessage());
-                ApexPages.addMessage(searchError);
-                return;
+            if (charCode > 31 && (charCode < 48 || charCode > 57)) {
+                return false;
             }
+            return true;
         }
-    }
-
-    // Attempts to insert new Booking Line Item records. Will add a page message to the Visualforce page showing the status.
-    // @param : no parameters
-    // @return : does not return anything
-    public void insertBookingLIs() // Change this to a page reference, and show informational message on creation. Also run the search again.
-    {
-        List <Booking_line_item__c> newBookingLIs = new List<Booking_line_item__c>();
-        updatePageView();
-        
-        if(bookingLineItemRecordType==null)// only populate this once
-        {
-            try
-            {
-                for(RecordType singleRecType: [SELECT Id FROM RecordType WHERE Name =: bookingRecordTypeName AND SobjectType = 'Booking_line_item__c'])
-                {
-                    bookingLineItemRecordType=singleRecType;
-                }
-            }
-            catch(Exception e)
-            {
-                ApexPages.Message bookingLineCreationError = new ApexPages.Message(ApexPages.Severity.Info,System.label.No_record_type_defined_for_Booking_Line_Item + ' ' + bookingRecordTypeName + ' ' + System.label.No_record_type_defined_for_Booking_Line_Item_2  + ': ' + e.getMessage());
-                ApexPages.addMessage(bookingLineCreationError);
-            }
-        }
-        for(Contract_line_item__c single : [SELECT Id, Name, Contract__c,  Product__c, Quantity_contracted__c, Product_Family__c, Line_Item_Price__c, Clinical_Indicator__c, Customer_Product_Invoice_Name__c,  Clinical_Indicator_Description__c, Chargeable_Overtime__c, Unit_Type__c, Additional_Capabilities__c,Uplift_Percentage__c FROM Contract_line_item__c WHERE ID IN: allCLIRecordsPersistPageChange])
-        {
-            Booking_line_item__c singleRec = createBookingLI(single);
-            newBookingLIs.add(singleRec);
-        }
-
-        System.debug('records to Insert: ' + newBookingLIs.size());
-        if(newBookingLIs.size()>0)
-        {
-            try
-            {
-                insert newBookingLIs;
-                String infoMsg = newBookingLIs.size()==1?' ' + System.label.Booking_Line_Item_Created: ' ' + System.label.Booking_Line_Items_Created;
-
-                ApexPages.Message bookingLinesCreated = new ApexPages.Message(ApexPages.Severity.Info,newBookingLIs.size() + infoMsg);
-                ApexPages.addMessage(bookingLinesCreated);
-            }
-            catch(Exception e)
-            {
-                ApexPages.Message bookingLineCreationError = new ApexPages.Message(ApexPages.Severity.Error,System.label.Error_Creating_Booking_Line_Item + ': ' + e.getMessage());
-                ApexPages.addMessage(bookingLineCreationError);
-            }
-        }
-        else
-        {
-            ApexPages.Message pleaseSelectProduct = new ApexPages.Message(ApexPages.Severity.Warning,System.label.Please_Select_Product);
-                ApexPages.addMessage(pleaseSelectProduct);
-        }
-    }
-
-    // Gets a list of records for display on the Visualforce page
-    // @param : no parameters
-    // @return : returns a list of contractLineItemWrapper records for display on the Visualforce page
-    public List<ContractLineItemWrapper> updatePageView()
-    {
-        allCLIRecordsWrapped = new List<ContractLineItemWrapper>(); // this seems to be setting checkbox to zero, but if put elsewhere, problems arise
-        for(Contract_line_item__c singleLI : (List<Contract_line_item__c>)ssc.getRecords())
-        { 
-            if(allCLIRecordsPersistPageChange.contains(singleLI.Id)) // this is for maintaining the checkboxes that were selected.
-            {
-                allCLIRecordsWrapped.add(new ContractLineItemWrapper(singleLI, true));
-            }
-            else // if the record wasn't previously checked, show the record with checkbox set to false
-            {
-                allCLIRecordsWrapped.add(new ContractLineItemWrapper(singleLI));
-            }
-        }
-        return allCLIRecordsWrapped;
-    }
-
-    // Updates persistent set of data, updates the page view, inserts BLI records, clears persistent set (as we've now inserted records), search again
-    // @param : no parameters
-    // @return : does not return anything
-    public void insertAndSearchAgain()
-    {
-        updatePersistentSet();
-        updatePageView();
-        insertBookingLIs();
-        clearPersistentSet();
-        performSearch();
-    }
-
-    // Updates persistent set of data, updates the page view, inserts BLI records, returns us to the booking record
-    // @param : no parameters
-    // @return : returns a page reference
-    public PageReference insertAndReturn()
-    {
-        updatePersistentSet();
-        updatePageView();
-        insertBookingLIs();
-        
-        // if variable== false
-        return returnToBooking();
-    }
-
-    // Generates a URL back to the parent booking record
-    // @param : no parameters
-    // @return : returns a page reference
-    public pageReference returnToBooking()
-    {
-        List<Apexpages.Message> msgs = ApexPages.getMessages();
-        boolean b = false;
-        for(Apexpages.Message msg:msgs)
-        {
-            //System.debug('severity is: ' + msg.getSeverity());
-            if( msg.getSeverity() == ApexPages.Severity.ERROR)
-            {
-                b=true;
-            }
-        }
-        if(!b)
-        {
-            PageReference pg = new PageReference('/' + ApexPages.currentPage().getParameters().get('bookingId')); 
-            pg.setRedirect(true);
-            return pg;
-        }
-        else
-        {
-            return null;
-        }
-    }
-
-    // Commits previous page selected records to a persistent set of Ids, and displays the first page of records
-    // @param : no parameters
-    // @return : does not return anything
-    public void first() {
-        updatePersistentSet();
-        ssc.first();
-        updatePageView();
-    }
-
-    // Commits previous page selected records to a persistent set of Ids, and displays the last page of records
-    // @param : no parameters
-    // @return : does not return anything
-    public void last() {
-        updatePersistentSet();
-        ssc.last();
-        updatePageView();
-    }
-
-    // Commits previous page selected records to a persistent set of Ids, and displays the previous page of records
-    // @param : no parameters
-    // @return : does not return anything
-    public void previous() {
-        updatePersistentSet();
-        ssc.previous();
-        updatePageView();
-    }
-
-    // Commits previous page selected records to a persistent set of Ids, and displays the next page of records
-    // @param : no parameters
-    // @return : does not return anything
-    public void next() {
-        updatePersistentSet();
-        ssc.next();
-        updatePageView();
-    }
-
-    // Commits previous page selected records to a persistent set of Ids, and displays the next page of records
-    // @param : no parameters
-    // @return : does not return anything
-    public void jumpToPage()
-    {
-        updatePersistentSet();
-        ssc.getPageNumber();
-        updatePageView();
-    }
-
-    // Commits selected records to a persistent set of Ids
-    // @param : no parameters
-    // @return : does not return anything
-    public void updatePersistentSet()
-    {
-        System.debug('allCLIRecordsPersistPageChange before ' + allCLIRecordsPersistPageChange);
-        System.debug('allCLIRecordsPersistPageChange before size: ' + allCLIRecordsPersistPageChange.size());
-        for(ContractLineItemWrapper single : allCLIRecordsWrapped) // go through all clis that are on the current page, just before button press
-        {
-            Id childId = single.childLI.Id;
-            if(allCLIRecordsPersistPageChange.contains(childId)) // if the item is in the set, do a check to see if it is now unchecked and remove it from set
-            {
-                System.debug('does it contain this?');
-                //System.debug('allCLIRecordsPersistPageChange before ' + allCLIRecordsPersistPageChange);
-                if(!single.selected)// if single is now unchecked, remove it from the set.
-                {
-                    allCLIRecordsPersistPageChange.remove(childId);
-                }
-                System.debug('single is: ' + single);
-            }
-            if(single.selected && !allCLIRecordsPersistPageChange.contains(childId)) // if it's checked and not yet in the set, add it to the set
-            {
-                allCLIRecordsPersistPageChange.add(childId);
-            }
-        }
-        System.debug('allCLIRecordsPersistPageChange after ' + allCLIRecordsPersistPageChange);
-        System.debug('allCLIRecordsPersistPageChange after size: ' + allCLIRecordsPersistPageChange.size());
-    }
-
-    // Clears the persistent set of Ids. (Normally used after records are inserted)
-    // @param : no parameters
-    // @return : does not return anything
-    public void clearPersistentSet()
-    {
-        allCLIRecordsPersistPageChange.clear();
-    }
-
-    // Creates a Booking Line Item record based upon a related Contract Line Item's information
-    // @param : singleClI a Contract_line_item__c to map to the new BLI record
-    // @return : returns a Booking_Line_Item__c record
-    public Booking_Line_Item__c createBookingLI(Contract_line_item__c singleCLI)
-    {
-        Booking_Line_Item__c bookingLIToReturn = new Booking_Line_Item__c();
-        // bookingLIToReturn.Name=singleCLI.Name; // This is an autonumber field now
-        bookingLIToReturn.Case__c=parentRecordId;
-        bookingLIToReturn.Contract_line_item__c = singleCLI.Id;
-        bookingLIToReturn.Product__c = singleCLI.Product__c;
-        bookingLIToReturn.Price__c = singleCLI.Line_Item_Price__c;
-        bookingLIToReturn.Unit_Type__c = singleCLI.Unit_Type__c;
-        bookingLIToReturn.Customer_Product_Invoice_Name__c = singleCLI.Customer_Product_Invoice_Name__c;// customer product invoice
-        bookingLIToReturn.Clinical_Indicator__c = singleCLI.Clinical_Indicator__c;// clinical indicator
-        bookingLIToReturn.Clinical_Indicator_details__c = singleCLI.Clinical_Indicator_Description__c; // clinical indicator details
-        bookingLIToReturn.Chargeable_Overtime__c = singleCLI.Chargeable_Overtime__c;//Chargeable_Overtime__c
-        bookingLIToReturn.Addition_Details__c = singleCLI.Additional_Capabilities__c;
-        bookingLIToReturn.Uplift_Percentage__c = singleCLI.Uplift_Percentage__c; // Khushal Dave T-457534
-        
-        if(bookingLineItemRecordType !=null)
-        {
-            bookingLIToReturn.RecordTypeId = bookingLineItemRecordType.id;
-        }
-        return bookingLIToReturn;
-    }
-
-    // Used for display on VF page (includes checkbox for selection)
-    @testVisible private class ContractLineItemWrapper
-    {
-        public boolean selected {get;set;}
-        public Contract_Line_Item__c childLI {get;set;}
-
-        // ContractLineItemWrapper constructor
-        public ContractLineItemWrapper(Contract_line_item__c singleLineItem)
-        {
-            childLI = singleLineItem;
-            selected = false;
-        }
-
-        // ContractLineItemWrapper constructor
-        public ContractLineItemWrapper(Contract_line_item__c singleLineItem, boolean isChecked)
-        {
-            childLI = singleLineItem;
-            selected = isChecked;
-        }
-
-        // ContractLineItemWrapper constructor
-        public ContractLineItemWrapper()
-        {
-            childLI = new Contract_Line_Item__c();
-            selected = false;
-        }
-    }
-}
+    </script>
+</apex:page>
